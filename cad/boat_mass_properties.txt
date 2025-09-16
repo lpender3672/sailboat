@@ -1,0 +1,34 @@
+Mass properties of Boat
+     Configuration: Default
+     Coordinate system: Coordinate System1
+
+Density varies
+
+Mass = 2859.54586 grams
+
+Volume = 1502038.94405 cubic millimeters
+
+Surface area = 546548.92711  square millimeters
+
+Center of mass: ( millimeters )
+	X = 140.95213
+	Y = -126.94225
+	Z = -0.18425
+
+Principal axes of inertia and principal moments of inertia: ( grams *  square millimeters )
+Taken at the center of mass.
+	 Ix = ( 0.85573, -0.51741,  0.00426)   	Px = 23697512.09255
+	 Iy = (-0.51742, -0.85573,  0.00263)   	Py = 31585965.73201
+	 Iz = ( 0.00229, -0.00446, -0.99999)   	Pz = 52339139.05410
+
+Moments of inertia: ( grams *  square millimeters )
+Taken at the center of mass and aligned with the output coordinate system. (Using positive tensor notation.)
+	Lxx = 25809617.44129	Lxy = -3492499.14252	Lxz = 76274.28364
+	Lyx = -3492499.14252	Lyy = 29474525.06963	Lyz = -109935.84943
+	Lzx = 76274.28364	Lzy = -109935.84943	Lzz = 52338474.36775
+
+Moments of inertia: ( grams *  square millimeters )
+Taken at the output coordinate system. (Using positive tensor notation.)
+	Ixx = 71889395.65849	Ixy = -54657727.07504	Ixz = 2010.89955
+	Iyx = -54657727.07504	Iyy = 86286659.13218	Iyz = -43053.84386
+	Izx = 2010.89955	Izy = -43053.84386	Izz = 155230192.49674
