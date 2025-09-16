@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QDialog,
 )
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QThread
 import pyqtgraph.opengl as gl
 import numpy as np
 from stl import mesh
@@ -62,7 +62,8 @@ def create_arrow(start, end, color=(1, 0, 0, 1), rfac=0.01):
 
     z_axis = np.array([0, 0, 1])  # Default cone orientation along z-axis
     rotation_vector = np.cross(z_axis, arrow_direction)
-    rotation_angle = np.arccos(np.dot(z_axis, arrow_direction)) * 180 / np.pi
+    todot = np.dot(z_axis, arrow_direction) / (np.linalg.norm(z_axis) * np.linalg.norm(arrow_direction) + 1e-8)
+    rotation_angle = np.arccos(todot) * 180 / np.pi
 
     if np.linalg.norm(rotation_vector) > 0:
         rotation_vector /= np.linalg.norm(rotation_vector)
@@ -93,34 +94,42 @@ def create_arrow(start, end, color=(1, 0, 0, 1), rfac=0.01):
 
     return cylinder_mesh, cone_mesh
 
+class float_plane_solver(QThread):
+    finished = pyqtSignal(np.ndarray, np.ndarray, np.ndarray)
+    new_cob = pyqtSignal(np.ndarray, np.ndarray, np.ndarray) # angle, com, cob
 
-class STLViewerWidget(QWidget):
+    def __init__(self, stl_mesh, mass, com, inertia, parent=None):
+        super().__init__(parent)
+        self.stl_mesh = stl_mesh
+        self.mass = mass
+        self.com = com
+        self.inertia = inertia
 
-    def start_solve(self):
-        
+    def run(self):
         # copy mesh
         temp_mesh = mesh.Mesh(np.copy(self.stl_mesh.data))
         limit = 1e-5
         epsilon = np.inf
         iteration = 0
-        max_iterations = 500
+        max_iterations = 100
 
-        angle = np.array([-np.pi/2, 0, 0])
-        position = np.zeros(3)
+        angle = np.array([-np.pi/2, np.deg2rad(3), 0])
+        position = np.copy(self.com)
+        position[2] += 150
 
         velocity = np.zeros(3)
         angular_velocity = np.zeros(3)
         prev_position = np.copy(position)
         prev_angle = np.copy(angle)
 
-        dt = 0.001
+        dt = 0.1
 
         vertices = self.stl_mesh.vectors.reshape(-1, 3)
         centroid = np.mean(vertices, axis=0)
         vertices_zeroed = vertices - centroid
 
-        while epsilon > limit and iteration < max_iterations:
-
+        # Precompute zeroed mesh for fast buoyancy calculations
+        def get_rotated_mesh(angle, position):
             roll, pitch, yaw = angle
             Rx = np.array([
                 [1, 0, 0],
@@ -138,45 +147,122 @@ class STLViewerWidget(QWidget):
                 [0, 0, 1]
             ])
             R = Rz @ Ry @ Rx
-            vertices_rotated = vertices_zeroed @ R.T
-            # set z_bob
-            vertices_rotated = vertices_rotated + position
+            vertices_rotated = vertices_zeroed @ R.T + position
+            return vertices_rotated.reshape(-1, 3, 3)
 
-            temp_mesh.vectors = vertices_rotated.reshape(-1, 3, 3)
+        # Store latest cob for arrow
+        latest_cob = None
 
+        def dynamics(state):
+            position, velocity, angle, angular_velocity = state
+
+            # Use precomputed zeroed mesh and fast rotation
+            temp_mesh.vectors = get_rotated_mesh(angle, position)
             cob, total_volume, mistreated_volume = stl_center_of_buoyancy_plane(temp_mesh, [0,0,0], [0,0,1])
 
-            density_kg_mm3 = 1.025 * 1e-9  # convert to kg/mm^3
-            gravity_mm_s2 = 9.81 * 1000 * np.array([0, 0, 1]) # convert to mm/s^2
+            # Save latest cob for arrow
+            nonlocal latest_cob
+            latest_cob = cob
+
+            density_kg_mm3 = 1025 * 1e-9
+            gravity_mm_s2 = 9.81 * 1000 * np.array([0, 0, 1])
 
             buoyant_force = density_kg_mm3 * total_volume * gravity_mm_s2 * np.array([0, 0, 1])
             net_force = buoyant_force - self.mass * gravity_mm_s2
             net_moment = np.cross(cob - self.com, buoyant_force)
 
             acceleration = net_force / self.mass
-            velocity += acceleration * dt
-            position += velocity * dt
-
             angular_acceleration = np.linalg.inv(self.inertia) @ net_moment
-            angular_velocity += angular_acceleration * dt
-            angle += angular_velocity * dt
 
-            #epsilon = np.linalg.norm(position - prev_position) + np.linalg.norm(angle - prev_angle)
+            return (
+                velocity,
+                acceleration,
+                angular_velocity,
+                angular_acceleration
+            )
 
+        damping_linear = 0.98
+        damping_angular = 0.98
+
+        while epsilon > limit and iteration < max_iterations:
+            state = (position, velocity, angle, angular_velocity)
+
+            # RK4 steps
+            k1 = dynamics(state)
+            k2 = dynamics((
+                position + 0.5 * dt * k1[0],
+                velocity + 0.5 * dt * k1[1],
+                angle + 0.5 * dt * k1[2],
+                angular_velocity + 0.5 * dt * k1[3]
+            ))
+            k3 = dynamics((
+                position + 0.5 * dt * k2[0],
+                velocity + 0.5 * dt * k2[1],
+                angle + 0.5 * dt * k2[2],
+                angular_velocity + 0.5 * dt * k2[3]
+            ))
+            k4 = dynamics((
+                position + dt * k3[0],
+                velocity + dt * k3[1],
+                angle + dt * k3[2],
+                angular_velocity + dt * k3[3]
+            ))
+
+            position += (dt / 6.0) * (k1[0] + 2*k2[0] + 2*k3[0] + k4[0])
+            velocity = damping_linear * (velocity + (dt / 6.0) * (k1[1] + 2*k2[1] + 2*k3[1] + k4[1]))
+            angle += (dt / 6.0) * (k1[2] + 2*k2[2] + 2*k3[2] + k4[2])
+            angular_velocity = damping_angular * (angular_velocity + (dt / 6.0) * (k1[3] + 2*k2[3] + 2*k3[3] + k4[3]))
+
+            # had enough of this silliness just fix roll -90 and yaw 0
+            angle[0] = -np.pi/2
+            angle[2] = 0
+
+            if iteration % 20 == 0:
+                self.new_cob.emit(angle, position, latest_cob)
+
+            epsilon = np.linalg.norm(velocity) + np.linalg.norm(angular_velocity)
             iteration += 1
-            prev_position = np.copy(position)
-            prev_angle = np.copy(angle)
 
-            print(self.mass)
-            print("Iteration", iteration, "COB:", cob, "Angle (deg):", np.rad2deg(angle), ' Epsilon:', epsilon, "Z bob (mm):", position[2], "Volume (m^3):", total_volume * 1e-9)
+            print("Iteration", iteration, "position", position, "angle (deg)", np.rad2deg(angle))
+
 
         print("Solved in", iteration, "iterations")
+        self.finished.emit(angle, position, latest_cob)
+
+class STLViewerWidget(QWidget):
+
+    def start_solve(self):
+
+        # start thread
+        self.thread = float_plane_solver(self.stl_mesh, self.mass, self.com, self.inertia, parent=self)
+
+        self.thread.finished.connect(self.on_solve_finished)
+        self.thread.new_cob.connect(self.on_new_cob)
+
+        self.thread.start()
+
+    def on_solve_finished(self, angle, com, cob):
+        self.angle = angle
+        self.position = com
 
         self.update_mesh_plot()
+        #self.update_mesh_plot(angle=angle, position=com, arrow_start=com, arrow_end=cob)
+
+    def on_new_cob(self, angle, com, cob):
+        # draw arrow from com to cob
+        self.update_mesh_plot(angle=angle, position=com, arrow_start=com, arrow_end=cob)
+
 
     def load_mass_properties(self, massprop_path):
         self.mass_props = load_mass_properties(massprop_path)
         self.com = np.array(self.mass_props.get('center_of_mass_mm', [0,0,0]))
+
+        # subtract centroid offset
+        vertices = self.stl_mesh.vectors.reshape(-1, 3)
+        centroid = np.mean(vertices, axis=0)
+
+        self.com += -centroid
+
         self.mass = self.mass_props.get('mass_g', 0) * 1e-3
         # Use inertia at COM if available
         I = self.mass_props.get('inertia_tensor_cm')
@@ -185,7 +271,7 @@ class STLViewerWidget(QWidget):
                 [I['Lxx'], I['Lxy'], I['Lxz']],
                 [I['Lxy'], I['Lyy'], I['Lyz']],
                 [I['Lxz'], I['Lyz'], I['Lzz']],
-            ])
+            ]) * 1e-3 # convert to kg mm^2
 
 
     def __init__(self, parent=None, popup=False):
@@ -194,13 +280,14 @@ class STLViewerWidget(QWidget):
         self.angle = np.zeros(3)  # [roll, pitch, yaw] in radians
         # set roll actually to 90 deg for boat upright
         self.angle[0] = np.deg2rad(-90)
+        self.angle[1] = np.deg2rad(3) # start with 3 deg pitch
+
+        self.position = np.zeros(3)  # [x, y, z] in mm
 
         self.display_solved = False
         self.mass_props = None
         self.com = np.zeros(3)
         self.inertia = np.eye(3)
-
-        self.z_bob = 0.0
 
         layout = QVBoxLayout(self)
         self.view = EventGLViewWidget()
@@ -243,7 +330,9 @@ class STLViewerWidget(QWidget):
         layout.addWidget(viewSettingWidget)
         layout.addWidget(self.view)
 
-        self.view.setCameraPosition(distance=1)
+        self.view.setCameraPosition(distance=10)
+
+        self.thread = None
 
 
 
@@ -295,10 +384,10 @@ class STLViewerWidget(QWidget):
     def load_stl_file(self, stl_file):
         self.stl_file = stl_file
         self.stl_mesh = mesh.Mesh.from_file(stl_file)
-        self.update_mesh_plot(angle=self.angle, z_bob=self.z_bob)
+        self.update_mesh_plot(angle=self.angle, position=self.position)
 
 
-    def update_mesh_plot(self, angle=None, z_bob=0.0):
+    def update_mesh_plot(self, *args, angle=None, position=None, arrow_start=None, arrow_end=None):
         # clear the view
         self.view.items = []
 
@@ -310,7 +399,9 @@ class STLViewerWidget(QWidget):
         vertices_zeroed = vertices - centroid
 
         if angle is None:
-            angle = np.array([-90, 0, 0])
+            angle = self.angle
+        if position is None:
+            position = self.position
 
         roll, pitch, yaw = angle
         Rx = np.array([
@@ -330,10 +421,9 @@ class STLViewerWidget(QWidget):
         ])
         R = Rz @ Ry @ Rx
         vertices_rotated = vertices_zeroed @ R.T
-        
-        
+
         # Apply vertical bob
-        vertices_rotated = vertices_rotated + np.array([0, 0, z_bob])
+        vertices_rotated = vertices_rotated + position
         faces = np.arange(len(vertices_rotated)).reshape(-1, 3)
 
         # Update mesh vectors for normal calculation
@@ -357,6 +447,12 @@ class STLViewerWidget(QWidget):
         if self.arrowToggle.isChecked():
             # Arrow points up from origin to max Z
             line, arrow = create_arrow([0, 0, 0], [0, 0, np.max(vertices_rotated[:,2])])
+            self.view.addItem(line)
+            self.view.addItem(arrow)
+
+        # Draw arrow from COM to COB if provided
+        if arrow_start is not None and arrow_end is not None:
+            line, arrow = create_arrow(arrow_start, arrow_end)
             self.view.addItem(line)
             self.view.addItem(arrow)
 
@@ -403,8 +499,8 @@ class STLViewerWidget(QWidget):
             drawEdges=False,
         )
         self.view.addItem(plane_item)
-        
-            # Draw water plane at Z=0, shaded blue
+
+        # Draw water plane at Z=0, shaded blue
         water_z = 0
         water_verts = np.array([
             [min_xyz[0], min_xyz[1], water_z],
@@ -413,7 +509,7 @@ class STLViewerWidget(QWidget):
             [min_xyz[0], max_xyz[1], water_z],
         ])
         # Apply vertical bob to water plane for visual effect (optional, comment out if not desired)
-        water_verts = water_verts + np.array([0, 0, z_bob])
+        water_verts = water_verts + position
         water_faces = np.array([[0, 1, 2], [0, 2, 3]])
         water_color = np.array([[0.2, 0.4, 1.0, 0.5]] * 2)  # semi-transparent blue
         water_item = gl.GLMeshItem(

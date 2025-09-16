@@ -70,7 +70,9 @@ def load_mass_properties(filepath):
 
     return props
 
-
+# compile this to be faster
+#from numba import njit
+#@njit
 def stl_center_of_buoyancy_plane(hull, plane_point, plane_normal):
     n = np.array(plane_normal) / np.linalg.norm(plane_normal)
     p0 = np.array(plane_point)
@@ -79,30 +81,36 @@ def stl_center_of_buoyancy_plane(hull, plane_point, plane_normal):
     centroid_sum = np.zeros(3)
     mistreated_volume = 0.0
 
-    for v0, v1, v2 in hull.vectors:
-        verts = [np.array(v0), np.array(v1), np.array(v2)]
-        d = [np.dot(v - p0, n) for v in verts]
+    # Flatten all vertices for fast lookup
+    all_verts = hull.vectors.reshape(-1, 3)
+    # Precompute signed distances for all vertices
+    all_distances = np.dot(all_verts - p0, n)
+    # Map each triangle to its vertex distances
+    triangle_distances = all_distances.reshape(-1, 3)
+
+    # Sort triangles by minimum signed distance (most submerged first)
+    sorted_indices = np.argsort(np.min(triangle_distances, axis=1))
+
+    for idx in sorted_indices:
+        v0, v1, v2 = hull.vectors[idx]
+        d = triangle_distances[idx]
 
         # base case: all vertices submerged
-        if all(val < 0 for val in d):
+        if np.all(d < 0):
             mat = np.array([v0, v1, v2])
             volume = np.linalg.det(mat) / 6.0
             centroid = (v0 + v1 + v2) / 4.0
             total_volume += volume
             centroid_sum += volume * centroid
-        
         # partially submerged triangles
-        elif any(val < 0 for val in d):
+        elif np.any(d < 0):
             # would have to find intersection points and probably end up with more triangles than before
             # so ignore this
-
-            # actually calc volume of mistreated triangles
             mat = np.array([v0, v1, v2])
             volume = np.linalg.det(mat) / 6.0
             mistreated_volume += volume
-
-            # ok so its actually quite high because the mesh is coarse
             pass
+        # else: all vertices above plane, skip
 
     if total_volume <= 0:
         raise ValueError("No submerged volume found")
