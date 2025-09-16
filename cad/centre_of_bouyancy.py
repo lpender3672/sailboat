@@ -124,6 +124,52 @@ def stl_center_of_buoyancy_plane(hull, plane_point, plane_normal):
     return cob, total_volume, mistreated_volume
 
 
+def stl_center_of_buoyancy_plane_fast(hull, plane_point, plane_normal):
+    # shoutout to chatgpt for vectorising this
+
+    n = np.array(plane_normal, dtype=float)
+    n /= np.linalg.norm(n)
+    p0 = np.array(plane_point, dtype=float)
+
+    # Reshape to (N, 3, 3) for N triangles
+    tris = hull.vectors
+    N = tris.shape[0]
+
+    # Compute signed distances for all vertices in all triangles → (N, 3)
+    dists = np.dot(tris.reshape(-1, 3) - p0, n).reshape(N, 3)
+
+    # Masks
+    all_submerged = np.all(dists < 0, axis=1)
+    any_submerged = np.any(dists < 0, axis=1)
+
+    # Fully submerged triangles
+    submerged_tris = tris[all_submerged]
+
+    if submerged_tris.size == 0:
+        raise ValueError("No submerged volume found")
+
+    # Compute volumes (determinant per triangle, treat as tetrahedron with origin)
+    volumes = np.linalg.det(submerged_tris) / 6.0   # (M,)
+    centroids = np.sum(submerged_tris, axis=1) / 4.0  # (M, 3)
+
+    total_volume = np.sum(volumes)
+    centroid_sum = np.einsum('i,ij->j', volumes, centroids)
+
+    # Partially submerged triangles — approximated as if fully submerged
+    mistreated_tris = tris[np.logical_and(~all_submerged, any_submerged)]
+    mistreated_volumes = np.linalg.det(mistreated_tris) / 6.0
+    mistreated_volume = np.sum(mistreated_volumes)
+
+    cob = centroid_sum / total_volume
+
+    # Optional check
+    if mistreated_volume / total_volume > 0.01:
+        pass
+        # raise ValueError("ruh roh, need to do geometry :( ", mistreated_volume / total_volume)
+
+    return cob, total_volume, mistreated_volume
+
+
 if __name__ == "__main__":
     filename = "cad/Boat.stl"
 

@@ -1,6 +1,6 @@
 import os
 from PyQt6.QtCore import QTimer
-from centre_of_bouyancy import stl_center_of_buoyancy_plane, load_mass_properties
+from centre_of_bouyancy import stl_center_of_buoyancy_plane, load_mass_properties, stl_center_of_buoyancy_plane_fast
 # stolen from propeller mesh viewer
 
 from PyQt6.QtWidgets import (
@@ -12,8 +12,10 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QMessageBox,
     QDialog,
+    QSplitter,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QThread
+import pyqtgraph as pg
 import pyqtgraph.opengl as gl
 import numpy as np
 from stl import mesh
@@ -95,15 +97,19 @@ def create_arrow(start, end, color=(1, 0, 0, 1), rfac=0.01):
     return cylinder_mesh, cone_mesh
 
 class float_plane_solver(QThread):
-    finished = pyqtSignal(np.ndarray, np.ndarray, np.ndarray)
-    new_cob = pyqtSignal(np.ndarray, np.ndarray, np.ndarray) # angle, com, cob
+    finished = pyqtSignal(object, object, object, float)
+    new_cob = pyqtSignal(object, object, object, float) # angle, com, cob, time (s)
 
-    def __init__(self, stl_mesh, mass, com, inertia, parent=None):
+    def __init__(self, stl_mesh, mass, com, inertia, angle0=None, position0=None, parent=None):
         super().__init__(parent)
         self.stl_mesh = stl_mesh
         self.mass = mass
         self.com = com
         self.inertia = inertia
+        self.dt = 0.001
+        # capture initial state from UI to ensure exact match
+        self.angle0 = np.array(angle0) if angle0 is not None else np.array([-np.pi/2, np.deg2rad(3), 0])
+        self.position0 = np.array(position0) if position0 is not None else (np.copy(self.com) + 1e-3 * np.ones(3))
 
     def run(self):
         # copy mesh
@@ -111,18 +117,15 @@ class float_plane_solver(QThread):
         limit = 1e-5
         epsilon = np.inf
         iteration = 0
-        max_iterations = 100
+        max_iterations = 1000
 
-        angle = np.array([-np.pi/2, np.deg2rad(3), 0])
-        position = np.copy(self.com)
-        position[2] += 150
+        angle = self.angle0.copy()
+        position = self.position0.copy()
 
         velocity = np.zeros(3)
         angular_velocity = np.zeros(3)
-        prev_position = np.copy(position)
-        prev_angle = np.copy(angle)
-
-        dt = 0.1
+        dt = self.dt
+        sim_time = 0.0
 
         vertices = self.stl_mesh.vectors.reshape(-1, 3)
         centroid = np.mean(vertices, axis=0)
@@ -153,15 +156,20 @@ class float_plane_solver(QThread):
         # Store latest cob for arrow
         latest_cob = None
 
+        # Emit initial state before stepping so UI matches initial draw
+        temp_mesh.vectors = get_rotated_mesh(angle, position)
+        init_cob, total_volume, _ = stl_center_of_buoyancy_plane_fast(temp_mesh, [0,0,0], [0,0,1])
+        latest_cob = init_cob
+        self.new_cob.emit(angle.copy(), position.copy(), latest_cob.copy(), sim_time)
+
         def dynamics(state):
+            nonlocal latest_cob
             position, velocity, angle, angular_velocity = state
 
-            # Use precomputed zeroed mesh and fast rotation
             temp_mesh.vectors = get_rotated_mesh(angle, position)
-            cob, total_volume, mistreated_volume = stl_center_of_buoyancy_plane(temp_mesh, [0,0,0], [0,0,1])
+            cob, total_volume, mistreated_volume = stl_center_of_buoyancy_plane_fast(temp_mesh, [0,0,0], [0,0,1])
 
             # Save latest cob for arrow
-            nonlocal latest_cob
             latest_cob = cob
 
             density_kg_mm3 = 1025 * 1e-9
@@ -171,7 +179,7 @@ class float_plane_solver(QThread):
             net_force = buoyant_force - self.mass * gravity_mm_s2
             net_moment = np.cross(cob - self.com, buoyant_force)
 
-            acceleration = net_force / self.mass
+            acceleration = net_force / (self.mass if self.mass else 1.0)
             angular_acceleration = np.linalg.inv(self.inertia) @ net_moment
 
             return (
@@ -213,55 +221,91 @@ class float_plane_solver(QThread):
             angle += (dt / 6.0) * (k1[2] + 2*k2[2] + 2*k3[2] + k4[2])
             angular_velocity = damping_angular * (angular_velocity + (dt / 6.0) * (k1[3] + 2*k2[3] + 2*k3[3] + k4[3]))
 
-            # had enough of this silliness just fix roll -90 and yaw 0
-            angle[0] = -np.pi/2
-            angle[2] = 0
+            # no yaw
+            angular_velocity[2] = 0
 
-            if iteration % 20 == 0:
-                self.new_cob.emit(angle, position, latest_cob)
+            # Emit update for UI/plot
+            self.new_cob.emit(angle.copy(), position.copy(), latest_cob if latest_cob is not None else np.zeros(3), sim_time)
 
             epsilon = np.linalg.norm(velocity) + np.linalg.norm(angular_velocity)
             iteration += 1
-
-            print("Iteration", iteration, "position", position, "angle (deg)", np.rad2deg(angle))
-
+            sim_time += dt
 
         print("Solved in", iteration, "iterations")
-        self.finished.emit(angle, position, latest_cob)
+        self.finished.emit(angle, position, latest_cob if latest_cob is not None else np.zeros(3), sim_time)
 
 class STLViewerWidget(QWidget):
 
     def start_solve(self):
 
         # start thread
-        self.thread = float_plane_solver(self.stl_mesh, self.mass, self.com, self.inertia, parent=self)
+        self.thread = float_plane_solver(
+            self.stl_mesh,
+            self.mass,
+            self.com,
+            self.inertia,
+            angle0=self.angle,
+            position0=self.position,
+            parent=self,
+        )
 
         self.thread.finished.connect(self.on_solve_finished)
         self.thread.new_cob.connect(self.on_new_cob)
 
+        # reset angles plot data
+        self.pitch_times = []
+        self.pitch_values = []
+        self.roll_norm_values = []
+        self.yaw_norm_values = []
+        if self.pitchCurve is not None:
+            self.pitchCurve.setData(self.pitch_times, self.pitch_values)
+        if hasattr(self, 'rollCurve') and self.rollCurve is not None:
+            self.rollCurve.setData(self.pitch_times, self.roll_norm_values)
+        if hasattr(self, 'yawCurve') and self.yawCurve is not None:
+            self.yawCurve.setData(self.pitch_times, self.yaw_norm_values)
+
         self.thread.start()
 
-    def on_solve_finished(self, angle, com, cob):
+    def on_solve_finished(self, angle, com, cob, t):
         self.angle = angle
         self.position = com
 
         self.update_mesh_plot()
         #self.update_mesh_plot(angle=angle, position=com, arrow_start=com, arrow_end=cob)
 
-    def on_new_cob(self, angle, com, cob):
-        # draw arrow from com to cob
-        self.update_mesh_plot(angle=angle, position=com, arrow_start=com, arrow_end=cob)
+    def on_new_cob(self, angle, com, cob, t):
+        # update angles plot: time vs pitch (deg), roll/(pi/2), yaw/(pi/2)
 
+        self.angle = angle
+        self.position = com
+
+        t = float(t)
+        self.pitch_times.append(t)
+        self.pitch_values.append(float(np.rad2deg(angle[1])))
+        norm = (np.pi / 2.0)
+        self.roll_norm_values.append(float(angle[0] % norm))
+        self.yaw_norm_values.append(float(angle[2] % norm))
+        if self.pitchCurve is not None:
+            self.pitchCurve.setData(self.pitch_times, self.pitch_values)
+        if hasattr(self, 'rollCurve') and self.rollCurve is not None:
+            self.rollCurve.setData(self.pitch_times, self.roll_norm_values)
+        if hasattr(self, 'yawCurve') and self.yawCurve is not None:
+            self.yawCurve.setData(self.pitch_times, self.yaw_norm_values)
+
+        # periodically redraw the 3D view with arrow to reduce cost
+        if (len(self.pitch_times) % 5) == 0:
+            self.update_mesh_plot(angle=angle, position=com, arrow_start=com, arrow_end=cob)
 
     def load_mass_properties(self, massprop_path):
         self.mass_props = load_mass_properties(massprop_path)
         self.com = np.array(self.mass_props.get('center_of_mass_mm', [0,0,0]))
-
-        # subtract centroid offset
+        # subtract centroid offset from COM to match zeroed mesh coordinates
         vertices = self.stl_mesh.vectors.reshape(-1, 3)
         centroid = np.mean(vertices, axis=0)
+        self.com = self.com - centroid
 
-        self.com += -centroid
+        # position should start at COM (in zeroed-mesh frame) with a tiny epsilon
+        self.position = np.copy(self.com) + 1e-3 * np.ones(3)
 
         self.mass = self.mass_props.get('mass_g', 0) * 1e-3
         # Use inertia at COM if available
@@ -279,8 +323,8 @@ class STLViewerWidget(QWidget):
 
         self.angle = np.zeros(3)  # [roll, pitch, yaw] in radians
         # set roll actually to 90 deg for boat upright
-        self.angle[0] = np.deg2rad(-90)
-        self.angle[1] = np.deg2rad(3) # start with 3 deg pitch
+        self.angle[0] = np.deg2rad(-120)
+        self.angle[1] = np.deg2rad(3)  # start with 3 deg pitch
 
         self.position = np.zeros(3)  # [x, y, z] in mm
 
@@ -290,9 +334,24 @@ class STLViewerWidget(QWidget):
         self.inertia = np.eye(3)
 
         layout = QVBoxLayout(self)
-        self.view = EventGLViewWidget()
+        self.view = EventGLViewWidget()  # 3D view widget
         self.popup = popup
-        
+        self.dialog = None
+        # angles plot setup
+        self.pitch_times = []
+        self.pitch_values = []  # degrees
+        self.roll_norm_values = []  # normalized by (pi/2)
+        self.yaw_norm_values = []   # normalized by (pi/2)
+        self.pitchPlot = pg.PlotWidget()
+        self.pitchPlot.setBackground('w')
+        self.pitchPlot.showGrid(x=True, y=True, alpha=0.3)
+        self.pitchPlot.setLabel('bottom', 'Time', units='s')
+        self.pitchPlot.setLabel('left', 'Angle', units='varies')
+        self.pitchPlot.setTitle('Angles vs Time')
+        self.pitchPlot.addLegend()
+        self.pitchCurve = self.pitchPlot.plot(self.pitch_times, self.pitch_values, pen=pg.mkPen('r', width=2), name='Pitch (deg)')
+        self.rollCurve = self.pitchPlot.plot(self.pitch_times, self.roll_norm_values, pen=pg.mkPen('g', width=2), name='Roll/(pi/2)')
+        self.yawCurve = self.pitchPlot.plot(self.pitch_times, self.yaw_norm_values, pen=pg.mkPen('b', width=2), name='Yaw/(pi/2)')
 
         viewSettingWidget = QWidget()
         viewSettingLayout = QGridLayout(viewSettingWidget)
@@ -308,7 +367,6 @@ class STLViewerWidget(QWidget):
         self.arrowToggle = QCheckBox("Show Arrow")
         self.arrowToggle.setChecked(False)
         self.arrowToggle.stateChanged.connect(self.update_mesh_plot)
-
 
         self.save_button = QPushButton("Save to .stl")
         self.save_button.clicked.connect(self.save_stl_file)
@@ -328,8 +386,15 @@ class STLViewerWidget(QWidget):
 
         viewSettingWidget.setMaximumHeight(50)
         layout.addWidget(viewSettingWidget)
-        layout.addWidget(self.view)
-
+        # put the pitch plot above the 3D view using a splitter so both stay visible
+        splitter = QSplitter(Qt.Orientation.Vertical)
+        splitter.setChildrenCollapsible(False)
+        self.pitchPlot.setMinimumHeight(120)
+        splitter.addWidget(self.pitchPlot)
+        splitter.addWidget(self.view)
+        # initial sizes: smaller plot, larger 3D view
+        splitter.setSizes([200, 800])
+        layout.addWidget(splitter)
         self.view.setCameraPosition(distance=10)
 
         self.thread = None
@@ -376,7 +441,7 @@ class STLViewerWidget(QWidget):
     def set_mesh(self, blade_mesh):
         self.stl_file = None
         self.stl_mesh = blade_mesh
-
+        self.dialog = None
         if not self.popup and self.dialog:
             self.dialog.widget.set_mesh(blade_mesh)
 
@@ -384,7 +449,6 @@ class STLViewerWidget(QWidget):
     def load_stl_file(self, stl_file):
         self.stl_file = stl_file
         self.stl_mesh = mesh.Mesh.from_file(stl_file)
-        self.update_mesh_plot(angle=self.angle, position=self.position)
 
 
     def update_mesh_plot(self, *args, angle=None, position=None, arrow_start=None, arrow_end=None):
@@ -420,10 +484,8 @@ class STLViewerWidget(QWidget):
             [0, 0, 1]
         ])
         R = Rz @ Ry @ Rx
-        vertices_rotated = vertices_zeroed @ R.T
+        vertices_rotated = vertices_zeroed @ R.T + position
 
-        # Apply vertical bob
-        vertices_rotated = vertices_rotated + position
         faces = np.arange(len(vertices_rotated)).reshape(-1, 3)
 
         # Update mesh vectors for normal calculation
@@ -509,7 +571,7 @@ class STLViewerWidget(QWidget):
             [min_xyz[0], max_xyz[1], water_z],
         ])
         # Apply vertical bob to water plane for visual effect (optional, comment out if not desired)
-        water_verts = water_verts + position
+        water_verts = water_verts
         water_faces = np.array([[0, 1, 2], [0, 2, 3]])
         water_color = np.array([[0.2, 0.4, 1.0, 0.5]] * 2)  # semi-transparent blue
         water_item = gl.GLMeshItem(
@@ -528,7 +590,9 @@ if __name__ == "__main__":
 
     app = QApplication(sys.argv)
     window = STLViewerWidget()
+
     window.load_stl_file("cad/Boat.stl")
+    
     # Load mass properties if available
     massprop_path = os.path.join("cad", "boat_mass_properties.txt")
     if os.path.exists(massprop_path):
@@ -537,6 +601,8 @@ if __name__ == "__main__":
     window.setWindowTitle("Boat Mesh Viewer")
     window.resize(1000, 800)
     window.show()
+
+    window.update_mesh_plot()
 
     sys.exit(app.exec())
 
