@@ -181,6 +181,41 @@ A smooth response in pitch can be seen which converges nicely to a stable equili
 
 \section{Retrofitting work}
 
+Holes were cut to fit a shaft for the propeller and rudder.
+A large hole was cut in the top of the hull to fit the electronics and battery.
+A temporary cover was 3D printed to seal the hole after the electronics were installed.
+In the future this will be sealed either with an improved raised cabin or lowered cockpit.
+
+* picture of big hole cut
+
+A jig was made to drill the hole for the propeller shaft at the correct angle.
+This was done by cutting the boat hull geometry from a block with a hole at the correct angle.
+The block would then sit up against the keel and allow a precise hole to be drilled.
+The shaft is then epoxied in place with the internal axel sealed with thick silicone grease to prevent water ingress.
+
+* insert picture of jig
+* insert picture of axel in place
+
+The rudder was less straightforward due to limited hull space at the stern of the boat.
+It was then decided to mount the rudder axel vertically through the hull.
+A connecting rod above the hull then connects to the further bow side mounted servo, where the hull is deep enough to accommodate it.
+
+
+\subsection{Hull modifications}
+
+\subsection{Electronics and firmware}
+
+Initially I planned to use a drone motor and ESC to power the propeller.
+However, this was not feasible as these are designed to have a constant airflow over them to cool both the ESC and motor itself.
+This is not possible in the enclosed hull of the boat.
+High performance motors exist which use water cooling jackets, however these are expensive and surpasses the requirements of the project.
+Instead, a brushed DC motor was used, driven by a high current H bridge motor driver.
+These are much simpler devices which can be easily cooled with a small heatsink.
+A 3s LiPo battery is used to power the motor, providing a nominal 11.1V and up to 20A of current.
+The motor driver also has current shunt resistors, allowing the current to be measured by the rp2040 microcontroller.
+It was originally planned to use a cheap 16 bit arudino based board, however, the remote control reciever required 32 bits to interface with it.
+The rp2040 was chosen as a cheap but powerful microcontroller with a dual core ARM Cortex M0+ processor running at 133MHz.
+The reciever also required 5V which can also be used to power the pico and so a regulator was used to step down the 11.1V battery supply.
 
 
 \section{Conclusion}
