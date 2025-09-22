@@ -1,19 +1,31 @@
 // RP2040 (Raspberry Pi Pico) + CRSF receiver + motor driver
 #include <Arduino.h>
 #include <CRSFforArduino.hpp>
+#include <Servo.h>
 
-// Serial port for CRSF on Pico: Serial1 defaults to GP4 (TX) / GP5 (RX)
-// Wire RX (from receiver) -> GP5, TX (to receiver) -> GP4
-CRSFforArduino crsf(&Serial1);
+#include "hardware/uart.h"
+#include "hardware/gpio.h"
 
-// BTS7960 pins on Pico (PWM capable pairs suggested)
-// Use PWM-capable GPIOs for RPWM/LPWM (e.g., GP2, GP3)
-const uint8_t PIN_R_EN = 10;  // GP10
-const uint8_t PIN_L_EN = 11;  // GP11
-const uint8_t PIN_RPWM = 2;   // GP2 (PWM)
-const uint8_t PIN_LPWM = 3;   // GP3 (PWM)
-const uint8_t PIN_R_IS = 26;  // GP26/ADC0 (optional)
-const uint8_t PIN_L_IS = 27;  // GP27/ADC1 (optional)
+CRSFforArduino crsf(&Serial1, 1, 0);
+
+// Low-level UART configuration (matches your known-good sequence)
+#define UART_ID      uart0
+#define BAUD_RATE    420000
+#define DATA_BITS    8
+#define STOP_BITS    1
+#define PARITY       UART_PARITY_NONE
+#define UART_TX_PIN  0
+#define UART_RX_PIN  1
+
+const uint8_t PIN_R_EN = 10;
+const uint8_t PIN_L_EN = 11;
+const uint8_t PIN_RPWM = 2;
+const uint8_t PIN_LPWM = 3;
+const uint8_t PIN_R_IS = 26;  // ADC0
+const uint8_t PIN_L_IS = 27;  // ADC1
+
+const uint8_t PIN_SERVO = 4;
+Servo servo;
 
 static inline void enableDriver(bool enable) {
   digitalWrite(PIN_R_EN, enable ? HIGH : LOW);
@@ -40,7 +52,7 @@ static inline uint16_t readCurrentRaw() {
   return analogRead(PIN_R_IS) + analogRead(PIN_L_IS);
 }
 
-// Map CRSF channel (1000-2000us) to -255..255 motor speed
+
 int16_t usToSpeed(int us) {
   if (us < 1000) us = 1000;
   if (us > 2000) us = 2000;
@@ -48,10 +60,28 @@ int16_t usToSpeed(int us) {
   return (int16_t)val;
 }
 
+
+static volatile bool g_linkUp = false;
+
+
+static void onRcChannels(serialReceiverLayer::rcChannels_t *rcChannels);
+
+static void onLinkUp() {
+  g_linkUp = true;
+  enableDriver(true);
+  setSpeed(0);
+  Serial.println("CRSF link: UP");
+}
+
+static void onLinkDown() {
+  g_linkUp = false;
+  setSpeed(0);
+  enableDriver(false);
+  Serial.println("CRSF link: DOWN");
+}
+
 void setup() {
   Serial.begin(115200);
-  // Start CRSF on Serial1 (defaults are fine)
-  crsf.begin();
 
   pinMode(PIN_R_EN, OUTPUT);
   pinMode(PIN_L_EN, OUTPUT);
@@ -59,25 +89,74 @@ void setup() {
   pinMode(PIN_LPWM, OUTPUT);
   pinMode(PIN_R_IS, INPUT);
   pinMode(PIN_L_IS, INPUT);
-  enableDriver(true);
+  enableDriver(false);
   setSpeed(0);
+
+  // Servo setup: 1000-2000us range
+  servo.attach(PIN_SERVO, 1000, 2000);
+  servo.writeMicroseconds(1500);
+
+  // CRSF link callbacks
+  crsf.setLinkUpCallback(onLinkUp);
+  crsf.setLinkDownCallback(onLinkDown);
+  crsf.setRcChannelsCallback(onRcChannels);
+
+  // magic uart setup (anything missing and it breaks)
+  uart_init(UART_ID, BAUD_RATE);
+  gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
+  gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
+  uart_set_hw_flow(UART_ID, false, false);
+  uart_set_format(UART_ID, DATA_BITS, STOP_BITS, PARITY);
+  uart_set_fifo_enabled(UART_ID, false);
+
+  crsf.begin(BAUD_RATE);
+  Serial.println("Waiting for CRSF link...");
+
+  uint32_t t0 = millis();
+  while (!g_linkUp && (millis() - t0 < 8000)) {
+    crsf.update();
+    Serial.print(".");
+    delay(50);
+  }
+  if (!g_linkUp) {
+    Serial.println("\nCRSF link not detected (timeout). Motor stays disabled.");
+  }
 }
 
 void loop() {
   crsf.update();
+
+  if (!g_linkUp) {
+    setSpeed(0);
+  servo.writeMicroseconds(1500);
+    return;
+  }
+  
 
   // Use CH3 (throttle-like) to drive motor
   uint16_t ch3_us = crsf.rcToUs(crsf.getChannel(3));
   int16_t speed = usToSpeed((int)ch3_us);
   setSpeed(speed);
 
-  // Optional: print debug
+  // Channel 4 -> servo (e.g., yaw)
+  uint16_t ch4_us = crsf.rcToUs(crsf.getChannel(4));
+  servo.writeMicroseconds(ch4_us);
+
+
   static uint32_t last = 0;
   uint32_t now = millis();
   if (now - last > 250) {
     last = now;
-    Serial.print("CH3(us): "); Serial.print(ch3_us);
+  Serial.print("CH3(us): "); Serial.print(ch3_us);
     Serial.print("  speed: "); Serial.print(speed);
+  Serial.print("  CH4(us): "); Serial.print(ch4_us);
     Serial.print("  Iraw: "); Serial.println(readCurrentRaw());
+  }
+}
+
+// Called whenever RC channels are received; treat as link present
+static void onRcChannels(serialReceiverLayer::rcChannels_t * /*rcChannels*/) {
+  if (!g_linkUp) {
+    onLinkUp();
   }
 }
