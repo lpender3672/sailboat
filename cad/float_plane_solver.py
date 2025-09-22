@@ -1,6 +1,13 @@
 import os
 from PyQt6.QtCore import QTimer
-from centre_of_bouyancy import stl_center_of_buoyancy_plane, load_mass_properties, stl_center_of_buoyancy_plane_fast
+from centre_of_bouyancy import (
+    stl_center_of_buoyancy_plane, 
+    load_mass_properties, 
+    stl_center_of_buoyancy_plane_fast, 
+    stl_center_of_buoyancy_plane_advanced,
+    submerged_volume_trimesh,
+    numpy_stl_to_trimesh
+)
 # stolen from propeller mesh viewer
 
 from PyQt6.QtWidgets import (
@@ -158,7 +165,8 @@ class float_plane_solver(QThread):
 
         # Emit initial state before stepping so UI matches initial draw
         temp_mesh.vectors = get_rotated_mesh(angle, position)
-        init_cob, total_volume, _ = stl_center_of_buoyancy_plane_fast(temp_mesh, [0,0,0], [0,0,1])
+        tmsh = numpy_stl_to_trimesh(temp_mesh)
+        init_cob, total_volume, _ = submerged_volume_trimesh(tmsh, [0,0,0], [0,0,1])
         latest_cob = init_cob
         self.new_cob.emit(angle.copy(), position.copy(), latest_cob.copy(), sim_time)
 
@@ -167,7 +175,11 @@ class float_plane_solver(QThread):
             position, velocity, angle, angular_velocity = state
 
             temp_mesh.vectors = get_rotated_mesh(angle, position)
-            cob, total_volume, mistreated_volume = stl_center_of_buoyancy_plane_fast(temp_mesh, [0,0,0], [0,0,1])
+            #cob, total_volume, mistreated_volume = stl_center_of_buoyancy_plane_advanced(temp_mesh, [0,0,0], [0,0,1])
+            #cob, total_volume, mistreated_volume = stl_center_of_buoyancy_plane_fast(temp_mesh, [0,0,0], [0,0,1])
+
+            tmsh = numpy_stl_to_trimesh(temp_mesh)
+            cob, total_volume, mistreated_volume = submerged_volume_trimesh(tmsh, [0,0,0], [0,0,1])
 
             # Save latest cob for arrow
             latest_cob = cob
@@ -189,8 +201,8 @@ class float_plane_solver(QThread):
                 angular_acceleration
             )
 
-        damping_linear = 0.98
-        damping_angular = 0.98
+        damping_linear = 0.99
+        damping_angular = 0.99
 
         while epsilon > limit and iteration < max_iterations:
             state = (position, velocity, angle, angular_velocity)

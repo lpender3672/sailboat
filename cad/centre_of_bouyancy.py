@@ -1,12 +1,69 @@
-from OpenGL.arrays import vbo
+
 from PyQt6.QtWidgets import QApplication, QMainWindow
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 from PyQt6.QtCore import Qt
-from OpenGL.GL import *
 import sys
 import re
 import numpy as np
 from stl import mesh
+
+import trimesh
+import triangle
+
+import matplotlib.pyplot as plt
+
+
+def numpy_stl_to_trimesh(numpy_stl_mesh):
+    """
+    Convert a numpy-stl mesh (stl.mesh.Mesh) to a trimesh.Trimesh object.
+    """
+    # Flatten all triangle vertices into (N*3, 3)
+    all_triangles = numpy_stl_mesh.vectors.reshape(-1, 3)
+
+    # Get unique vertices and remap faces
+    vertices, inverse_indices = np.unique(all_triangles, axis=0, return_inverse=True)
+    
+    # Each triangle has 3 vertices, so reshape to (N, 3)
+    faces = inverse_indices.reshape(-1, 3)
+
+    # Create the trimesh object
+    tm = trimesh.Trimesh(vertices=vertices, faces=faces, process=True)
+    return tm
+
+def submerged_volume_trimesh(mesh: trimesh.Trimesh, plane_origin, plane_normal):
+    """
+    Return the volume of the part of `mesh` that lies below the plane defined by
+    `plane_origin` + normal `plane_normal`.
+    We slice the mesh at the plane, keep the part on the negative side (or whichever
+    side is submerged), cap it to make it watertight, then compute its volume.
+    """
+    # Ensure normal is unit length
+    n = -np.array(plane_normal, dtype=float)
+    n /= np.linalg.norm(n)
+    o = np.array(plane_origin, dtype=float)
+
+    # Slice the mesh, keep submerged side
+    sliced = mesh.slice_plane(plane_origin=o, plane_normal=n, cap=True)
+
+    if sliced is None:
+        # No intersection or mesh entirely on one side
+        # Determine if mesh is fully submerged or fully above
+        # We can check distances of vertices
+        dists = (mesh.vertices - o) @ n
+        if np.all(dists < 0):
+            # Fully submerged
+            return mesh.volume
+        else:
+            # Fully above water, no submerged part
+            return 0.0
+
+    
+    # Compute and return volume
+    vol = sliced.volume
+    cob = sliced.center_mass
+    total_volume = sliced.volume
+
+    return cob, total_volume, 0.0
 
 
 def load_mass_properties(filepath):
@@ -170,18 +227,134 @@ def stl_center_of_buoyancy_plane_fast(hull, plane_point, plane_normal):
     return cob, total_volume, mistreated_volume
 
 
+def stl_center_of_buoyancy_plane_advanced(hull, plane_point, plane_normal):
+    # Normalize the plane normal
+    n = np.array(plane_normal, dtype=float)
+    n /= np.linalg.norm(n)
+    p0 = np.array(plane_point, dtype=float)
+
+    # Reshape to (N, 3, 3) for N triangles
+    tris = hull.vectors
+    N = tris.shape[0]
+
+    # Compute signed distances for all vertices in all triangles → (N, 3)
+    dists = np.dot(tris.reshape(-1, 3) - p0, n).reshape(N, 3)
+
+    # Masks
+    all_submerged = np.all(dists < 0, axis=1)  # Fully submerged
+    any_submerged = np.any(dists < 0, axis=1)  # Partially submerged
+
+    assert all_submerged.shape == any_submerged.shape == (N,)
+
+    # Fully submerged triangles (treated normally)
+    submerged_tris = tris[all_submerged]
+
+    if submerged_tris.size == 0:
+        raise ValueError("No submerged volume found")
+
+    # Compute volumes for fully submerged triangles
+    volumes = np.linalg.det(submerged_tris) / 6.0   # (M,)
+    centroids = np.sum(submerged_tris, axis=1) / 4.0  # (M, 3)
+
+    total_volume = np.sum(volumes)
+    centroid_sum = np.einsum('i,ij->j', volumes, centroids)
+
+    # Now deal with partially submerged triangles
+    mistreated_mask = np.logical_and(~all_submerged, any_submerged)
+    mistreated_tris = tris[mistreated_mask]  # Partially submerged
+
+    # Find the distances for mistreated triangles
+    mistreated_dists = dists[mistreated_mask]  # (M, 3)
+
+    # Submerged and non-submerged vertices for mistreated triangles
+    submerged_areas = np.maximum(0, -mistreated_dists)  # Positive when submerged
+
+    # Total submerged area for each mistreated triangle (sum of submerged vertex areas)
+    total_submerged_area = np.sum(submerged_areas, axis=1)  # (M,)
+
+    # Interpolated volume for each mistreated triangle, scaling based on submerged area
+    mistreated_volumes = np.linalg.det(mistreated_tris) / 6.0 * (total_submerged_area / 3.0)  # (M,)
+
+    # Sum of mistreated volumes
+    mistreated_volume = np.sum(mistreated_volumes)
+    mistreated_centroids = np.sum(mistreated_tris, axis=1) / 4.0  # Shape: (M, 3)
+
+    # Final center of buoyancy calculation (COB)
+    total_volume += mistreated_volume
+    centroid_sum += np.sum(mistreated_volumes[:, np.newaxis] * mistreated_centroids, axis=0)
+
+    cob = centroid_sum / total_volume
+
+    return cob, total_volume, mistreated_volume
+
+
 if __name__ == "__main__":
     filename = "cad/Boat.stl"
 
     plane_point = [0, 0, 0]
-    plane_normal = [0, 0, -1]
+    plane_normal = [0, 0, 1]
 
     hull = mesh.Mesh.from_file(filename)
+    copy_hull = mesh.Mesh(np.copy(hull.data))
+    trimesh_obj = trimesh.load_mesh(filename)
+    # move to centroid
+    
+    copy_hull.vectors -= np.mean(copy_hull.vectors, axis=(0,1))
+    
+    #cob, total_volume, mistreated_volume = stl_center_of_buoyancy_plane(hull, plane_point, plane_normal)
 
-    cob, total_volume, mistreated_volume = stl_center_of_buoyancy_plane(hull, plane_point, plane_normal)
+    N = 100
 
-    print("Center of Buoyancy:", cob)
-    print("Total Volume:", total_volume)
-    print("Mistreated Volume:", mistreated_volume)
+    min_z, max_z = np.min(copy_hull.vectors[:,:,1]), np.max(copy_hull.vectors[:,:,1])
+    plane_zs = np.linspace(min_z, max_z, N)
+    
+    volume_fast = np.zeros(N)
+    volume_slow = np.zeros(N)
+    volume_advanced = np.zeros(N)
+    volume_trimesh = np.zeros(N)
+
+    for i, z in enumerate(plane_zs):
+        plane_point = [0, 0, z]
+
+        # Fast (fully submerged only)
+        try:
+            _, volume_fast[i], _ = stl_center_of_buoyancy_plane_fast(copy_hull, plane_point, plane_normal)
+        except ValueError:
+            volume_fast[i] = 0
+
+        try:
+            _, volume_slow[i], _ = stl_center_of_buoyancy_plane(copy_hull, plane_point, plane_normal)
+        except ValueError:
+            volume_slow[i] = 0
+
+        # Advanced (interpolated partials)
+        try:
+            _, volume_advanced[i], _ = stl_center_of_buoyancy_plane_advanced(copy_hull, plane_point, plane_normal)
+        except ValueError:
+            volume_advanced[i] = 0
+
+        # Trimesh method
+        try:
+            volume_trimesh[i] = submerged_volume_trimesh(trimesh_obj, plane_point, plane_normal)
+        except Exception as e:
+            volume_trimesh[i] = 0
+            print("trimesh error:", e)
+
+
+    # Plot all curves
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    ax.plot(plane_zs, volume_fast, label="Fast (fully submerged only)", linestyle='--')
+    ax.plot(plane_zs, volume_slow, label="Slow (mistreated partials)", linestyle='-.')
+    ax.plot(plane_zs, volume_advanced, label="Advanced (interpolated)", linewidth=2)
+    ax.plot(plane_zs, volume_trimesh, label="Trimesh slice_plane", linestyle=':')
+
+    ax.set_title("Submerged Volume vs Waterline Height")
+    ax.set_xlabel("Waterline Z")
+    ax.set_ylabel("Submerged Volume")
+    ax.grid(True)
+    ax.legend()
+    plt.tight_layout()
+    plt.show()
 
 
