@@ -17,3 +17,7 @@
 *.fdb_latexmk
 *.synctex.gz
 *.pdf
+
+# misc
+
+figures/*.psd

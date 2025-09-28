@@ -61,7 +61,7 @@
 
 \begin{document}
 
-\title{Model Boat Retrofit}
+\title{Model Boat Analysis and Retrofit}
 \author{Louis}
 \date{September 2025}
 \maketitle 
@@ -102,14 +102,14 @@ My background in aerospace engineering
 
 \begin{figure}[H]
     \centering
-    \includegraphics[width=0.8\textwidth]{figures/IMG_3011.jpg}
+    \includegraphics[width=0.6\textwidth, angle=-90]{figures/IMG_3011.jpg}
     \caption{Tape on boat hull to prevent lidar reflections.}
     \label{fig:lidar_tape}
 \end{figure}
 
 \begin{figure}[H]
     \centering
-    \includegraphics[width=0.8\textwidth]{figures/2m8uCHP5jN.png}
+    \includegraphics[width=0.6\textwidth]{figures/2m8uCHP5jN.png}
     \caption{3D scan of the boat hull in the CAD package SOLIDWORKS.}
     \label{fig:3d_scan}
 \end{figure}
@@ -149,7 +149,7 @@ Euler angles (roll, pitch, yaw) are plotted over time to show how the boat stabi
 
 \begin{figure}[H]
     \centering
-    \includegraphics[width=0.8\textwidth]{figures/XqMwPnm3wm.png}
+    \includegraphics[width=0.6\textwidth]{figures/XqMwPnm3wm.png}
     \caption{Boat bouyancy analysis GUI.}
     \label{fig:boat_gui}
 \end{figure}
@@ -177,38 +177,168 @@ which over many iterations hidden in the x axis scale, causes steep changes in t
 
 A smooth response in pitch can be seen which converges nicely to a stable equilibrium of $\sim2$ degrees pitch up.
 
+\subsection{Propeller placement and specification}
 
+An initial guess for the propeller size will be done using non dimensional analysis.
+We would like to know the size and speed of the propeller for the size of hull and a target speed of 1.4 m/s (walking pace).
+
+Non dimensional coefficients relevant to the problem are the advance ratio and thrust coefficient.
+These are defined with their typical values for displace hull boats below.
+\begin{equation}
+    J = \frac{V}{nD} \approx 0.6
+\end{equation}
+\begin{equation}
+    C_T = \frac{T}{\rho n^2 D^4} \approx 0.1
+\end{equation}
+
+Here $V$ is the boat velocity, $n$ the propeller rotational speed in revolutions per second, 
+$D$ the propeller diameter, $T$ the thrust, and $\rho$ the water density.
+
+\subsection*{Scaling relations}
+From the definition of $J$, we can write
+\begin{equation}
+    n = \frac{V}{J D}.
+\end{equation}
+Substituting this into the definition of $C_T$ gives a relation between thrust, velocity, and propeller diameter:
+\begin{equation}
+    T = \rho n^2 D^4 C_T 
+      = \rho \left( \frac{V}{J D} \right)^2 D^4 C_T.
+\end{equation}
+Rearranging for $D$ and $n$ yields scaling relations in terms of the boats required thrust (or drag) $T$, velocity $V$, and fluid density $\rho$:
+\begin{equation}
+    D = \sqrt{\frac{T J^2}{\rho V^2 C_T}},
+\end{equation}
+\begin{equation}
+    n = \frac{V}{J D}.
+\end{equation}
+
+For our model boat of length $L = 0.66\,\text{m}$, advancing at walking speed 
+$V \approx 1.4\,\text{m/s}$, we adopt $\rho = 1000\,\text{kg/m}^3$, $J = 0.6$, and $C_T = 0.1$.
+The required thrust is estimated in the range $T = 2\text{--}4\,\text{N}$ to overcome hull resistance.
+
+\paragraph{Lower drag case ($T=2$\,N):}
+\begin{align}
+    D &\approx 0.061\,\text{m} \\
+    n &\approx 38.5 \,\text{rev/s} \; (2310\,\text{RPM})
+\end{align}
+
+\paragraph{Higher drag case ($T=4$\,N):}
+\begin{align}
+    D &\approx 0.086\,\text{m} \\
+    n &\approx 27.2 \,\text{rev/s} \; (1630\,\text{RPM})
+\end{align}
+
+These results show that for the target Froude number ($Fr \approx 0.55$), 
+propeller diameters in the range $60$--$90$\,mm with rotational speeds 
+$1600$--$2300$\,RPM are consistent with typical open-water coefficients.
+If physical constraints limit the diameter below this range, higher rotational 
+speeds and larger thrust coefficients must be accepted, leading to lower efficiency.
+
+\subsection{CFD analysis of hull resistance}
+
+A CFD analysis was done in solidworks flow simulation to estimate the drag of the hull at the target speed of 1.4 m/s.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.6\textwidth]{figures/CFD.png}
+    \caption{CFD analysis of boat hull at 1.4 m/s.}
+    \label{fig:boat_cfd}
+\end{figure}
+
+Figure \ref{fig:boat_cfd} shows a center plane cut of the CFD analysis where the clear hydrostatic pressure distribution can be seen.
+A spike in pressure is seen at the front of both keels where the flow stagnates, and reduced pressure can be seen at places of high curvature, where the flow
+accelerates over the hull and the pressure drops.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.6\textwidth]{figures/GG Force (X) 1.png}
+    \caption{Drag force against iterations on the boat hull at 1.4 m/s.}
+    \label{fig:boat_cfd_drag}
+\end{figure}
+
+Figure \ref{fig:boat_cfd_drag} shows the drag force on the hull over the iterations of the solver.
+The solver converges nicely to a drag force of 4.8 N which is higher than the initial estimate of 2-4 N.
+This is likely due to the much wider beam of the hull increasing the wetted area compared to a typical slender displacement hulls.
+
+The value of 4.8 N means we are closer to the case of higher drag in the propeller sizing analysis.
+This means we will want a larger diameter propeller than initially thought, closer to 90 mm.
+This isnt possible due to the limited space between the keels so the maximum size of 50 mm will be used.
+The rotational speed is then given by the scaling relations as 44.6 rev/s (2676 RPM).
+
+\subsection{Propeller design}
+
+Software meant for the design of drone propellers was used for the model boat propeller.
+This was software I developed for my fourth year project on drone propeller acoustics.
+Blade element momentum theory is used to predict the thrust, torque, power and efficiency of a propeller given its geometry and operating conditions.
+It also implements acoustic calculations for air propellers which is not relevant for this project.
+
+The density and speed of sound is set to that of sea water ($\rho = 1025$ kg/m$^3$, $c = 1540$ m/s).
+The size of $D = 50$ mm and rotational speed of $n = 44.6$ rev/s are set.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.8\textwidth]{figures/prop_design.png}
+    \caption{Propeller design for the boat from drone propeller software \cite{year4}.}
+    \label{fig:boat_prop_design}
+\end{figure}
+
+Chord, twist and sweep distributions are set to rough values for now but could be iterated upon later.
+The graph shown bottom center of figure \ref{fig:boat_prop_design} shows the blade loading profile defined as the local thrust coefficient over local solidity (circumferential area fraction).
+
+The software does not account for cavitation which is a complex phenomenon where low pressure regions form bubbles in the water.
+This causes damage to commercial ship propellers and could be of concern for this higher loaded small propeller.
+Ideally, a specific non-dimensional caviation number should be above a threshold limit to avoid cavitation.
+This is defined as
+\begin{equation}
+    \sigma = \frac{p_\infty - p_v}{\tfrac{1}{2}\rho V^2}
+\end{equation}
+
+where $\sigma$ is the cavitation number,
+$p_\infty$ is the ambient pressure,
+$p_v$ is the vapour pressure,
+$\rho$ is the water density, and
+$V$ is the inflow velocity.
 
 \section{Retrofitting work}
 
+\subsection{Hull modifications}
+
 Holes were cut to fit a shaft for the propeller and rudder.
-A large hole was cut in the top of the hull to fit the electronics and battery.
+A large hole was cut in the top of the hull with a dremel to fit the electronics and battery.
+A 1:1 scale printout of the hull was stuck on to ensure the hole was in the correct place and of the correct size.
 A temporary cover was 3D printed to seal the hole after the electronics were installed.
 In the future this will be sealed either with an improved raised cabin or lowered cockpit.
 
-* picture of big hole cut
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.6\textwidth]{figures/holes.jpg}
+    \caption{Hole cut in the hull to fit propeller shaft, and electronics bay.}
+    \label{fig:hull_holes}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.6\textwidth]{figures/prop_shaft.jpg}
+    \caption{Propeller shaft installed in the hull.}
+    \label{fig:prop_shaft}
+\end{figure}
 
 A jig was made to drill the hole for the propeller shaft at the correct angle.
 This was done by cutting the boat hull geometry from a block with a hole at the correct angle.
 The block would then sit up against the keel and allow a precise hole to be drilled.
-The shaft is then epoxied in place with the internal axel sealed with thick silicone grease to prevent water ingress.
-
-* insert picture of jig
-* insert picture of axel in place
+The shaft is then epoxied in place with the internal axel sealed with thick silicone grease to prevent water getting in.
 
 The rudder was less straightforward due to limited hull space at the stern of the boat.
 It was then decided to mount the rudder axel vertically through the hull.
 A connecting rod above the hull then connects to the further bow side mounted servo, where the hull is deep enough to accommodate it.
-
-
-\subsection{Hull modifications}
 
 \subsection{Electronics and firmware}
 
 Initially I planned to use a drone motor and ESC to power the propeller.
 However, this was not feasible as these are designed to have a constant airflow over them to cool both the ESC and motor itself.
 This is not possible in the enclosed hull of the boat.
-High performance motors exist which use water cooling jackets, however these are expensive and surpasses the requirements of the project.
+Additionally, the low speeds and high loading required earlier in the analysis are not suitable for drone motors which are designed to spin at high RPM with low torque.
+High performance boat motors exist which use water cooling jackets, however these are expensive and surpass the requirements of the project.
 Instead, a brushed DC motor was used, driven by a high current H bridge motor driver.
 These are much simpler devices which can be easily cooled with a small heatsink.
 A 3s LiPo battery is used to power the motor, providing a nominal 11.1V and up to 20A of current.
@@ -217,8 +347,22 @@ It was originally planned to use a cheap 16 bit arudino based board, however, th
 The rp2040 was chosen as a cheap but powerful microcontroller with a dual core ARM Cortex M0+ processor running at 133MHz.
 The reciever also required 5V which can also be used to power the pico and so a regulator was used to step down the 11.1V battery supply.
 
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.6\textwidth]{figures/electronics_annotated.png}
+    \caption{Electronics outside of the boat hull.}
+    \label{fig:boat_electronics}
+\end{figure}
+
+\section{Float test and results}
+
+*comparison of water line to predicted*
+
+*comparison of speed and handling to predicted*
 
 \section{Conclusion}
+
+*Picture of the boat in the water*
 
 
 \section{Appendix}
@@ -227,11 +371,11 @@ The reciever also required 5V which can also be used to power the pico and so a 
 
 \begin{thebibliography}{9}
 
-  \bibitem{handout}
-  J. V. Taylor
-  \emph{4A2 COMPUTATIONAL FLUID DYNAMICS: WRITING AN EULER SOLVER}
+  \bibitem{year4}
+  L. W. Pender
+  \emph{Acoustic Signatures of Quadcopter Propellers.}
   University of Cambridge,
-  2024.
+  2025.
 
 \end{thebibliography}
 
