@@ -430,7 +430,7 @@
         "rdist": "Cosine",
         "c75": 0.01,
         "twinB": "Single",
-        "dthread": 0.002,
+        "dthread": 0.0032,
         "bdir": "CW"
     },
     "dist": {
