@@ -8,7 +8,7 @@
 
 CRSFforArduino crsf(&Serial1, 1, 0);
 
-// Low-level UART configuration (matches your known-good sequence)
+// Low-level UART configuration
 #define UART_ID      uart0
 #define BAUD_RATE    420000
 #define DATA_BITS    8
@@ -92,7 +92,7 @@ void setup() {
   enableDriver(false);
   setSpeed(0);
 
-  // Servo setup: 1000-2000us range
+  // Servo 1000-2000us range
   servo.attach(PIN_SERVO, 1000, 2000);
   servo.writeMicroseconds(1500);
 
@@ -133,12 +133,12 @@ void loop() {
   }
   
 
-  // Use CH3 (throttle-like) to drive motor
+  // CH3 (throttle-like) to drive motor
   uint16_t ch3_us = crsf.rcToUs(crsf.getChannel(3));
   int16_t speed = usToSpeed((int)ch3_us);
   setSpeed(speed);
 
-  // Channel 4 -> servo (e.g., yaw)
+  // Channel 4 servo rudder
   uint16_t ch4_us = crsf.rcToUs(crsf.getChannel(4));
   servo.writeMicroseconds(ch4_us);
 
@@ -154,7 +154,6 @@ void loop() {
   }
 }
 
-// Called whenever RC channels are received; treat as link present
 static void onRcChannels(serialReceiverLayer::rcChannels_t * /*rcChannels*/) {
   if (!g_linkUp) {
     onLinkUp();

@@ -87,7 +87,7 @@ The boat has a unique twin keel design with the hull being carved from a solid b
 \section{Objective}
 
 With this project being the largest and most complex geometry the objectives were made to test and further my skills in engineering.
-My background in aerospace engineering 
+My background in aerospace engineering puts me in a good position to tackle these problems and learn new skills in doing so.
 
 \begin{itemize}
     \item Produce an accurate 3D model of the curved hull shape.
@@ -310,6 +310,9 @@ $V$ is the inflow velocity.
     \label{fig:final_cad}
 \end{figure}
 
+It was decided to use a belt drive between motor and propeller shaft axel to allow the motor to be mounted on axis with the hull, without sticking out.
+This also lowers the centre of mass and allows for different gear ratios, should the speed range need adjusting.
+
 \subsection{Hull modifications}
 
 Holes were cut to fit a shaft for the propeller and rudder.
@@ -337,10 +340,6 @@ This was done by cutting the boat hull geometry from a block with a hole at the 
 The block would then sit up against the keel and allow a precise hole to be drilled.
 The shaft is then epoxied in place with the internal axel sealed with thick silicone grease to prevent water getting in.
 
-The rudder was less straightforward due to limited hull space at the stern of the boat.
-It was then decided to mount the rudder axel vertically through the hull.
-A connecting rod above the hull then connects to the further bow side mounted servo, where the hull is deep enough to accommodate it.
-
 \subsection{Electronics and firmware}
 
 Initially I planned to use a drone motor and ESC to power the propeller.
@@ -355,6 +354,7 @@ The motor driver also has current shunt resistors, allowing the current to be me
 It was originally planned to use a cheap 16 bit arudino based board, however, the remote control reciever required 32 bits to interface with it.
 The rp2040 was chosen as a cheap but powerful microcontroller with a dual core ARM Cortex M0+ processor running at 133MHz.
 The reciever also required 5V which can also be used to power the pico and so a regulator was used to step down the 11.1V battery supply.
+A radiomaster boxer transmitter was used to control the boat remotely.
 
 \begin{figure}[H]
     \centering
@@ -363,19 +363,233 @@ The reciever also required 5V which can also be used to power the pico and so a 
     \label{fig:boat_electronics}
 \end{figure}
 
+The firmware was written in C++ using the Arduino framework for ease of use.
+The CRSFforArduino library was used to interface with the CRSF protocol of the receiver.
+Essentially 1024 levels of throttle sent over 2.4GHz, read over CRSF were mapped to 256 motor PWM levels and 1000-2,000us servo pulse widths.
+The full code is given in the appendix as listing \ref{lst:boat_firmware}.
+
+
 \section{Float test and results}
 
-*comparison of water line to predicted*
-
-*comparison of speed and handling to predicted*
+Unfortunately due to time constraints the installation of the electronics and testing of the system was not completed.
+The partial installation of the electronics also means the weight distribution is not final and so the bouyancy analysis may not be accurate.
+Additionally, the hull currently is not fully watertight and so further sealing work is required before testing.
 
 \section{Conclusion}
 
-*Picture of the boat in the water*
+A hull was successfully modelled in CAD from a 3D scan and virtually modified to fit a propeller shaft and controlling electronics.
+Quasi-static bouyancy analysis was performed to predict the float plane of the boat and inform propeller placement.
+Non dimensional analysis was used to estimate the required propeller size and speed, which was refined using CFD analysis of the hull drag.
+The analysis and CAD objectives, while not experimentally validated, were successfully completed.
+This was due to the scale of the project and time constraints meant the retrofitting and testing objectives were not fully completed.
+Throughout the project I developed skills modelling complex geometries, performing static and dynamic fluid analysis, and embedded motor control.
 
+\section{Future work}
+With the project objectives partially completed, there is still much work to be done to finish the retrofit and test the boat.
+\begin{itemize}
+    \item Finish installation of electronics and waterproofing of hull.
+    \item Test the boat in a bath tub to validate water tightness and bouyancy analysis.
+    \item Test on open water to validate propulsion system design.
+    \item Add telemetry to send boat data (current, speed, battery voltage, GPS module?) back to transmitter.
+    \item Design and 3D print a raised cabin to cover the electronics bay.
+    \item Fit a mast and boom for sailing functionality.
+\end{itemize}
 
 \section{Appendix}
 
+\begin{table}[h!]
+\centering
+\begin{tabular}{l l r}
+\hline
+\textbf{Item} & \textbf{Description} & \textbf{Cost (£)} \\
+\hline
+Rudder Servo motor         &  & 15 \\
+Propeller Motor            &  & 30 \\
+Motor controller           &  & 15 \\
+Conformal coating          &  & 20 \\
+ELRS Receiver              &  & 30 \\
+Pi Pico                    &  & 5  \\
+Buck converter             &  & 4  \\
+LiPo Battery               &  & 20 \\
+Connectors                 &  & 10 \\
+3D printed material        &  & 5  \\
+Polyester braided cable    &  & 6  \\
+Ripstop Nylon sail         &  & 7  \\
+Propeller shaft            &  & 20 \\
+\hline
+\textbf{Total} &  & \textbf{187} \\
+\hline
+\end{tabular}
+\caption{Breakdown of project component costs.}
+\label{tab:component_costs}
+\end{table}
+
+% list listing of code
+
+\begin{lstlisting}[language=C++, caption=RP2040 boat motor and servo control firmware, label=lst:boat_firmware]
+    // RP2040 (Raspberry Pi Pico) + CRSF receiver + motor driver
+#include <Arduino.h>
+#include <CRSFforArduino.hpp>
+#include <Servo.h>
+
+#include "hardware/uart.h"
+#include "hardware/gpio.h"
+
+CRSFforArduino crsf(&Serial1, 1, 0);
+
+// Low-level UART configuration
+#define UART_ID      uart0
+#define BAUD_RATE    420000
+#define DATA_BITS    8
+#define STOP_BITS    1
+#define PARITY       UART_PARITY_NONE
+#define UART_TX_PIN  0
+#define UART_RX_PIN  1
+
+const uint8_t PIN_R_EN = 10;
+const uint8_t PIN_L_EN = 11;
+const uint8_t PIN_RPWM = 2;
+const uint8_t PIN_LPWM = 3;
+const uint8_t PIN_R_IS = 26;  // ADC0
+const uint8_t PIN_L_IS = 27;  // ADC1
+
+const uint8_t PIN_SERVO = 4;
+Servo servo;
+
+static inline void enableDriver(bool enable) {
+  digitalWrite(PIN_R_EN, enable ? HIGH : LOW);
+  digitalWrite(PIN_L_EN, enable ? HIGH : LOW);
+}
+
+// speed: -255..255 (negative = reverse)
+static inline void setSpeed(int16_t speed) {
+  if (speed > 255) speed = 255;
+  if (speed < -255) speed = -255;
+  if (speed > 0) {
+    analogWrite(PIN_RPWM, speed);
+    analogWrite(PIN_LPWM, 0);
+  } else if (speed < 0) {
+    analogWrite(PIN_RPWM, 0);
+    analogWrite(PIN_LPWM, -speed);
+  } else {
+    analogWrite(PIN_RPWM, 0);
+    analogWrite(PIN_LPWM, 0);
+  }
+}
+
+static inline uint16_t readCurrentRaw() {
+  return analogRead(PIN_R_IS) + analogRead(PIN_L_IS);
+}
+
+
+int16_t usToSpeed(int us) {
+  if (us < 1000) us = 1000;
+  if (us > 2000) us = 2000;
+  long val = map(us, 1000, 2000, -255, 255);
+  return (int16_t)val;
+}
+
+
+static volatile bool g_linkUp = false;
+
+
+static void onRcChannels(serialReceiverLayer::rcChannels_t *rcChannels);
+
+static void onLinkUp() {
+  g_linkUp = true;
+  enableDriver(true);
+  setSpeed(0);
+  Serial.println("CRSF link: UP");
+}
+
+static void onLinkDown() {
+  g_linkUp = false;
+  setSpeed(0);
+  enableDriver(false);
+  Serial.println("CRSF link: DOWN");
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(PIN_R_EN, OUTPUT);
+  pinMode(PIN_L_EN, OUTPUT);
+  pinMode(PIN_RPWM, OUTPUT);
+  pinMode(PIN_LPWM, OUTPUT);
+  pinMode(PIN_R_IS, INPUT);
+  pinMode(PIN_L_IS, INPUT);
+  enableDriver(false);
+  setSpeed(0);
+
+  // Servo 1000-2000us range
+  servo.attach(PIN_SERVO, 1000, 2000);
+  servo.writeMicroseconds(1500);
+
+  // CRSF link callbacks
+  crsf.setLinkUpCallback(onLinkUp);
+  crsf.setLinkDownCallback(onLinkDown);
+  crsf.setRcChannelsCallback(onRcChannels);
+
+  // magic uart setup (anything missing and it breaks)
+  uart_init(UART_ID, BAUD_RATE);
+  gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
+  gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
+  uart_set_hw_flow(UART_ID, false, false);
+  uart_set_format(UART_ID, DATA_BITS, STOP_BITS, PARITY);
+  uart_set_fifo_enabled(UART_ID, false);
+
+  crsf.begin(BAUD_RATE);
+  Serial.println("Waiting for CRSF link...");
+
+  uint32_t t0 = millis();
+  while (!g_linkUp && (millis() - t0 < 8000)) {
+    crsf.update();
+    Serial.print(".");
+    delay(50);
+  }
+  if (!g_linkUp) {
+    Serial.println("\nCRSF link not detected (timeout). Motor stays disabled.");
+  }
+}
+
+void loop() {
+  crsf.update();
+
+  if (!g_linkUp) {
+    setSpeed(0);
+  servo.writeMicroseconds(1500);
+    return;
+  }
+  
+
+  // CH3 (throttle-like) to drive motor
+  uint16_t ch3_us = crsf.rcToUs(crsf.getChannel(3));
+  int16_t speed = usToSpeed((int)ch3_us);
+  setSpeed(speed);
+
+  // Channel 4 servo rudder
+  uint16_t ch4_us = crsf.rcToUs(crsf.getChannel(4));
+  servo.writeMicroseconds(ch4_us);
+
+
+  static uint32_t last = 0;
+  uint32_t now = millis();
+  if (now - last > 250) {
+    last = now;
+  Serial.print("CH3(us): "); Serial.print(ch3_us);
+    Serial.print("  speed: "); Serial.print(speed);
+  Serial.print("  CH4(us): "); Serial.print(ch4_us);
+    Serial.print("  Iraw: "); Serial.println(readCurrentRaw());
+  }
+}
+
+static void onRcChannels(serialReceiverLayer::rcChannels_t * /*rcChannels*/) {
+  if (!g_linkUp) {
+    onLinkUp();
+  }
+}
+
+\end{lstlisting}
 
 
 \begin{thebibliography}{9}
